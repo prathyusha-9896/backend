@@ -3,8 +3,7 @@ const cors = require('cors');
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 const axios = require('axios');
-const User = require('./models/User'); // User model
-const app = express();
+const app = express();  
 
 // Body parsing middleware
 app.use(express.json());  // To parse JSON bodies
@@ -13,10 +12,8 @@ app.use(express.json());  // To parse JSON bodies
 const corsOptions = {
   origin: 'http://localhost:3000',  // Allow the frontend to access the backend
   methods: ['GET', 'POST', 'OPTIONS'],  // Allow specific methods (GET, POST, OPTIONS)
-  credentials: true,                // Allow credentials (cookies, authorization headers, etc.)
+  credentials: true,  // Allow credentials (cookies, authorization headers, etc.)
 };
-
-// Use CORS middleware
 app.use(cors(corsOptions));
 
 // MongoDB connection setup
@@ -36,6 +33,45 @@ const connectDB = async () => {
 // Connect to MongoDB
 connectDB();
 
+const oauth2Client = new google.auth.OAuth2(
+  '1070666646612-k29u9uttmshfaa1lip3kj9b8pdn4im3j.apps.googleusercontent.com',
+  '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',
+  'http://localhost:5000/api/auth/google/callback'  // Redirect URI
+);
+
+// Google Calendar API route to sync meetings
+app.post('/api/sync-calendar', async (req, res) => {
+  const { access_token, meetingDateTime, endDateTime, description } = req.body;
+
+  oauth2Client.setCredentials({ access_token });
+
+  const calendar = google.calendar({ version: 'v3', auth: oauth2Client });
+
+  const event = {
+    summary: 'Scheduled Meeting',
+    description,
+    start: {
+      dateTime: meetingDateTime,
+      timeZone: 'UTC',
+    },
+    end: {
+      dateTime: endDateTime,
+      timeZone: 'UTC',
+    },
+  };
+
+  try {
+    const response = await calendar.events.insert({
+      calendarId: 'primary',
+      resource: event,
+    });
+
+    res.status(200).send({ message: 'Meeting synced with Google Calendar', eventId: response.data.id });
+  } catch (error) {
+    console.error('Error syncing with Google Calendar:', error);
+    res.status(500).send('Error syncing with Google Calendar');
+  }
+});
 // Log all incoming requests
 app.use((req, res, next) => {
   console.log('Request headers:', req.headers);
@@ -70,23 +106,28 @@ app.post('/api/users/register', async (req, res) => {
   }
 });
 
-// Availability schema
+// Availability schema (simplified format)
 const Availability = mongoose.model('Availability', new mongoose.Schema({
   userId: { type: String, required: true },
-  startTime: String,  // Example: "2024-10-15T09:00:00Z"
-  endTime: String,    // Example: "2024-10-15T17:00:00Z"
+  startTime: { type: String, required: true },  // Example: "2024-10-15T09:00:00Z"
+  endTime: { type: String, required: true },    // Example: "2024-10-15T17:00:00Z"
 }));
 
 // Availability route (POST) to save availability
 app.post('/api/availability', async (req, res) => {
-  const { userId, startTime, endTime } = req.body;
+  const { availability } = req.body;
+
+  if (!availability || !Array.isArray(availability)) {
+    return res.status(400).json({ message: 'Invalid input: Expected an array of availability records.' });
+  }
 
   try {
-    const newAvailability = new Availability({ userId, startTime, endTime });
-    await newAvailability.save();
-    res.send('Availability saved successfully');
+    // Save multiple availability records at once
+    const savedAvailability = await Availability.insertMany(availability);
+    res.status(200).json({ message: 'Availability saved successfully', savedAvailability });
   } catch (error) {
-    res.status(500).send('Error saving availability');
+    console.error('Error saving availability:', error);
+    res.status(500).send('Error saving availability.');
   }
 });
 
@@ -131,28 +172,48 @@ app.post('/api/sync-calendar', async (req, res) => {
   }
 });
 
-// Meeting schema
+// Define the Meeting schema
 const Meeting = mongoose.model('Meeting', new mongoose.Schema({
-  meetingStartDateTime: { type: String, required: true },
-  meetingEndDateTime: { type: String, required: true },
-  name: { type: String, required: true }
+  userName: { type: String, required: true },
+  userEmail: { type: String, required: true },
+  hostName: { type: String, required: true },
+  date: { type: String, required: true },
+  startTime: { type: String, required: true },
+  endTime: { type: String, required: true },
+  createdAt: { type: Date, default: Date.now } // Optional: track when the meeting was created
 }));
 
-app.post('/api/meetings', async (req, res) => {
-  const { meetingStartDateTime, meetingEndDateTime, name } = req.body;
-  
+// POST route to schedule a meeting
+app.post('/api/schedule-meeting', async (req, res) => {
+  const { userName, userEmail, hostName, date, startTime, endTime } = req.body;
+
+  // Validate the data
+  if (!userName || !userEmail || !date || !startTime || !endTime) {
+    return res.status(400).json({ message: 'All fields are required.' });
+  }
+
   try {
-    console.log('Received meeting details:', req.body); // Log request body
-    const newMeeting = new Meeting({ meetingStartDateTime, meetingEndDateTime, name });
+    // Save the meeting details to the database
+    const newMeeting = new Meeting({
+      userName,
+      userEmail,
+      hostName,
+      date,
+      startTime,
+      endTime
+    });
+
     await newMeeting.save();
-    
-    res.status(200).send({ message: 'Meeting scheduled successfully' });
+
+    console.log('Meeting scheduled:', newMeeting);
+
+    // Respond with success
+    res.status(200).json({ message: 'Meeting scheduled successfully', newMeeting });
   } catch (error) {
-    console.error('Error scheduling meeting:', error);
-    res.status(500).send('Error scheduling meeting');
+    console.error('Error scheduling the meeting:', error);
+    res.status(500).json({ message: 'Server error while scheduling the meeting.' });
   }
 });
-
 
 // Start the server
 const PORT = process.env.PORT || 5000;
